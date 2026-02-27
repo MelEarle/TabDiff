@@ -130,6 +130,18 @@ def concat_y_to_X(X, y):
     return np.concatenate([y, X], axis=1)
 
 
+def resolve_task_type(task_type: str) -> str:
+    valid_task_types = {t.value for t in src.TaskType}
+    if task_type in valid_task_types:
+        return task_type
+    if task_type == 'mixed':
+        # Mixed-target datasets are handled via explicit numerical/categorical
+        # target index lists in this file, so we select a valid non-multiclass
+        # enum value to keep downstream dataset transforms operational.
+        return 'binclass'
+    raise ValueError(f"Unknown task_type: {task_type}")
+
+
 def make_dataset(
     data_path: str,
     T: src.Transformations,
@@ -153,8 +165,10 @@ def make_dataset(
     else:
         num_target_dim, cat_target_dim = len(num_target_col_idx), len(cat_target_col_idx)
 
-    # classification
-    if task_type == 'binclass' or task_type == 'multiclass':
+    resolved_task_type = resolve_task_type(task_type)
+
+    # classification-style branching
+    if resolved_task_type in {'binclass', 'multiclass'}:
         X_cat = {} if os.path.exists(os.path.join(data_path, 'X_cat_train.npy'))  else None
         X_num = {} if os.path.exists(os.path.join(data_path, 'X_num_train.npy')) else None
         y = {} if os.path.exists(os.path.join(data_path, 'y_train.npy')) else None
@@ -208,15 +222,6 @@ def make_dataset(
 
     if y_only:
         int_col_idx_wrt_num = []
-    valid_task_types = {t.value for t in src.TaskType}
-    if task_type in valid_task_types:
-        resolved_task_type = task_type
-    elif task_type == 'mixed':
-        # Mixed-target datasets are internally handled via explicit target index lists.
-        # Use a non-multiclass TaskType so downstream preprocessing can proceed.
-        resolved_task_type = 'binclass'
-    else:
-        raise ValueError(f"Unknown task_type: {task_type}")
 
     D = src.Dataset(
         X_num,
