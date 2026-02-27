@@ -168,6 +168,10 @@ def main(args):
             main_model_path = main_model_path_arr[0]
         main_model_configs = pickle.load(open(os.path.join(os.path.dirname(main_model_path), 'config.pkl'), 'rb'))
         if main_model_configs['diffusion_params']['scheduler'] == "power_mean_per_column": # if learnable schedule is enabled in the main model, we need to infer noise params of the target column from the main model ckpt and train the y_only model with those params
+            num_target_col_idx = info.get('num_target_col_idx', [])
+            cat_target_col_idx = info.get('cat_target_col_idx', [])
+            if len(num_target_col_idx) + len(cat_target_col_idx) > 1:
+                raise ValueError("Learnable-schedule y_only with mixed/multi-target setup is not supported yet. Please use --non_learnable_schedule for mixed-target imputation.")
             from tabdiff.models.noise_schedule import PowerMeanNoise_PerColumn, LogLinearNoise_PerColumn
             if info['task_type'] == 'regression':
                 noise_schedule = PowerMeanNoise_PerColumn(

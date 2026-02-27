@@ -510,11 +510,36 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
         device = self.device
         dtype = torch.float32
 
-        # Create masks, true for the missing columns
-        num_mask = [i in num_mask_idx for i in range(self.num_numerical_features)]
-        cat_mask = [i in cat_mask_idx for i in range(len(self.num_classes))]
-        num_mask = torch.tensor(num_mask).to(x_num.device).to(x_num.dtype)
-        cat_mask = torch.tensor(cat_mask).to(x_cat.device).to(x_cat.dtype)
+        # Create masks, true for the missing columns. Accept either:
+        #   1) column index lists (legacy), or
+        #   2) per-row masks with shape (B, K_num) / (B, K_cat).
+        if isinstance(num_mask_idx, torch.Tensor):
+            if num_mask_idx.dim() != 2:
+                raise ValueError("num_mask_idx tensor should have shape (B, K_num)")
+            if num_mask_idx.shape != (b, self.num_numerical_features):
+                raise ValueError(
+                    f"num_mask_idx has shape {tuple(num_mask_idx.shape)}, expected {(b, self.num_numerical_features)}"
+                )
+            num_mask = num_mask_idx.to(x_num.device).to(x_num.dtype)
+            # Keep CFG target indexing as column-level indices.
+            self.num_mask_idx = num_mask.bool().any(dim=0).nonzero(as_tuple=False).flatten().tolist()
+        else:
+            num_mask = [i in num_mask_idx for i in range(self.num_numerical_features)]
+            num_mask = torch.tensor(num_mask).to(x_num.device).to(x_num.dtype)
+
+        if isinstance(cat_mask_idx, torch.Tensor):
+            if cat_mask_idx.dim() != 2:
+                raise ValueError("cat_mask_idx tensor should have shape (B, K_cat)")
+            if cat_mask_idx.shape != (b, len(self.num_classes)):
+                raise ValueError(
+                    f"cat_mask_idx has shape {tuple(cat_mask_idx.shape)}, expected {(b, len(self.num_classes))}"
+                )
+            cat_mask = cat_mask_idx.to(x_cat.device).to(x_cat.dtype)
+            # Keep CFG target indexing as column-level indices.
+            self.cat_mask_idx = cat_mask.bool().any(dim=0).nonzero(as_tuple=False).flatten().tolist()
+        else:
+            cat_mask = [i in cat_mask_idx for i in range(len(self.num_classes))]
+            cat_mask = torch.tensor(cat_mask).to(x_cat.device).to(x_cat.dtype)
 
         # Create the chain of t
         t = torch.linspace(0,1,self.num_timesteps, dtype=dtype, device=device)      # times = 0.0,...,1.0

@@ -157,6 +157,61 @@ python main.py --dataname <NAME_OF_DATASET>_dcr --mode test --report --no_wandb
 ## Missing Value Imputation with Classifier-free Guidance (CFG)
 Our current experiments only include imputing the target column. However, our implementation, located at ```sample_impute()``` in [unified_ctime_diffusion.py](./tabdiff/models/unified_ctime_diffusion.py), should support imputing multiple columns with different data types.
 
+### Adapting TabDiff to mixed-target imputation (e.g., 9 categorical + 1 numerical targets)
+
+The current released pipeline assumes a single target type (`task_type`: `binclass` or `regression`) and only masks one target column in `trainer.test_impute()`. To support mixed-type multi-target imputation, update the following components:
+
+1. **Dataset metadata schema (`process_dataset.py` and your `data/Info/<name>.json`)**
+   - Keep `num_col_idx` and `cat_col_idx` for non-target features.
+   - Add two explicit target lists (recommended):
+     - `num_target_col_idx` (e.g., 1 column)
+     - `cat_target_col_idx` (e.g., 9 columns)
+   - Ensure all four lists are mutually exclusive.
+   - Update metadata generation so numerical targets are saved as numerical and categorical targets as categorical (instead of dispatching all targets from `task_type`).
+
+2. **Processed tensor ordering (target-first convention per type)**
+   - Maintain a deterministic ordering after processing:
+     - `X_num = [num_targets..., regular_num_features...]`
+     - `X_cat = [cat_targets..., regular_cat_features...]`
+   - This keeps target mask indices simple during imputation:
+     - `num_mask_idx = list(range(len(num_target_col_idx)))`
+     - `cat_mask_idx = list(range(len(cat_target_col_idx)))`
+
+3. **`--y_only` dataset construction (`utils_train.py`)**
+   - Current code routes target columns by a single task branch.
+   - For mixed targets, make `y_only=True` return **both** target groups:
+     - `X_num_t` should contain only numerical targets.
+     - `X_cat_t` should contain only categorical targets.
+   - Do not drop one modality when the other exists.
+
+4. **Imputation masking (`tabdiff/trainer.py:test_impute`)**
+   - Replace single-index masking (`[0]`) with full target masks:
+     - mask all categorical targets to `[MASK]` category index.
+     - initialize all numerical targets (e.g., train-set mean per target).
+   - Pass both `num_mask_idx` and `cat_mask_idx` into `sample_impute(...)`.
+
+5. **CFG guidance model shape consistency (`tabdiff/main.py`)**
+   - Ensure `y_only` model input dimensions match the full mixed target set.
+   - If using learnable per-column schedules, update target-noise-parameter extraction to support multiple target columns per modality (not only the first target column).
+   - Practical recommendation: first validate mixed-target imputation with `--non_learnable_schedule`, then enable learnable schedules.
+
+6. **Reconstruction and evaluation**
+   - Verify `split_num_cat_target(...)` and `recover_data(...)` map mixed targets back to original columns correctly.
+   - Extend `eval_impute.py` from single-target logic to multi-target metrics:
+     - Categorical targets: per-column/macro F1 or accuracy.
+     - Numerical targets: RMSE/MAE per target.
+     - Report aggregated summary across the 10 targets.
+
+7. **Recommended rollout order**
+   - (a) schema + preprocessing
+   - (b) y_only mixed-target tensors
+   - (c) trainer masking changes
+   - (d) end-to-end dry run on 1-2 trials
+   - (e) evaluation script updates
+   - (f) optional learnable schedule support
+
+This preserves the existing diffusion core and CFG equations; most required work is in data/schema plumbing, mask construction, and evaluation.
+
 ### Training Guidance Model
 In order to enable classifier-free guidance (CFG), you need to first train an unconditional guidance model on the target column by running the training command with the `--y_only` flag
 ```

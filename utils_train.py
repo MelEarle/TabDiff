@@ -131,7 +131,21 @@ def make_dataset(
     change_val: bool,
     concat = True,
     y_only = False,
-):
+): 
+
+    info = src.load_json(os.path.join(data_path, 'info.json'))
+    num_target_col_idx = info.get('num_target_col_idx', [])
+    cat_target_col_idx = info.get('cat_target_col_idx', [])
+    target_col_idx = info['target_col_idx']
+    num_target_pos_in_y = [target_col_idx.index(i) for i in num_target_col_idx] if num_target_col_idx else []
+    cat_target_pos_in_y = [target_col_idx.index(i) for i in cat_target_col_idx] if cat_target_col_idx else []
+    if len(num_target_col_idx) == 0 and len(cat_target_col_idx) == 0:
+        if task_type == 'regression':
+            num_target_dim, cat_target_dim = len(info['target_col_idx']), 0
+        else:
+            num_target_dim, cat_target_dim = 0, len(info['target_col_idx'])
+    else:
+        num_target_dim, cat_target_dim = len(num_target_col_idx), len(cat_target_col_idx)
 
     # classification
     if task_type == 'binclass' or task_type == 'multiclass':
@@ -142,12 +156,18 @@ def make_dataset(
         for split in ['train', 'test']:
             X_num_t, X_cat_t, y_t = src.read_pure_data(data_path, split)
             if y_only:
-                X_num_t = X_num_t[:, :0]
-                X_cat_t = X_cat_t[:, :0]
+                X_num_t = y_t[:, num_target_pos_in_y] if num_target_dim > 0 else X_num_t[:, :0]
+                X_cat_t = y_t[:, cat_target_pos_in_y] if cat_target_dim > 0 else X_cat_t[:, :0]
+            elif concat:
+                if len(num_target_col_idx) > 0 or len(cat_target_col_idx) > 0:
+                    if num_target_dim > 0:
+                        X_num_t = np.concatenate([y_t[:, num_target_pos_in_y], X_num_t], axis=1)
+                    if cat_target_dim > 0:
+                        X_cat_t = np.concatenate([y_t[:, cat_target_pos_in_y], X_cat_t], axis=1)
             if X_num is not None:
                 X_num[split] = X_num_t
             if X_cat is not None:
-                if concat:
+                if concat and not y_only and len(num_target_col_idx) == 0 and len(cat_target_col_idx) == 0:
                     X_cat_t = concat_y_to_X(X_cat_t, y_t)
                 X_cat[split] = X_cat_t  
             if y is not None:
@@ -161,10 +181,16 @@ def make_dataset(
         for split in ['train', 'test']:
             X_num_t, X_cat_t, y_t = src.read_pure_data(data_path, split)
             if y_only:
-                X_num_t = X_num_t[:, :0]
-                X_cat_t = X_cat_t[:, :0]
+                X_num_t = y_t[:, num_target_pos_in_y] if num_target_dim > 0 else X_num_t[:, :0]
+                X_cat_t = y_t[:, cat_target_pos_in_y] if cat_target_dim > 0 else X_cat_t[:, :0]
+            elif concat:
+                if len(num_target_col_idx) > 0 or len(cat_target_col_idx) > 0:
+                    if num_target_dim > 0:
+                        X_num_t = np.concatenate([y_t[:, num_target_pos_in_y], X_num_t], axis=1)
+                    if cat_target_dim > 0:
+                        X_cat_t = np.concatenate([y_t[:, cat_target_pos_in_y], X_cat_t], axis=1)
             if X_num is not None:
-                if concat:
+                if concat and not y_only and len(num_target_col_idx) == 0 and len(cat_target_col_idx) == 0:
                     X_num_t = concat_y_to_X(X_num_t, y_t)
                 X_num[split] = X_num_t
             if X_cat is not None:
@@ -172,7 +198,6 @@ def make_dataset(
             if y is not None:
                 y[split] = y_t
 
-    info = src.load_json(os.path.join(data_path, 'info.json'))
     int_col_idx_wrt_num = info['int_col_idx_wrt_num']
 
     if y_only:
