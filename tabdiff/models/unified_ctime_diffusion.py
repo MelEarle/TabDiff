@@ -177,9 +177,11 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
             sigma_num_hat = sigma_num_cur + gamma * sigma_num_cur
             t_hat = self.num_schedule.inverse_to_t(sigma_num_hat)
             t_hat = torch.min(t_hat, dim=-1, keepdim=True).values    # take the samllest t_hat induced by sigma_num
-            zero_gamma = (gamma == 0).squeeze(-1)
+            # `gamma` can be per-column (shape: [T, d_num]) when using per-column
+            # schedules. Reduce masks to per-timestep before indexing `t_hat`/`t`.
+            zero_gamma = (gamma == 0).all(dim=-1)
             t_hat[zero_gamma] = t[zero_gamma]
-            out_of_bound = (t_hat > 1).squeeze()
+            out_of_bound = (t_hat > 1).squeeze(-1)
             sigma_num_hat[out_of_bound] = sigma_num_cur[out_of_bound]
             t_hat[out_of_bound] = t[out_of_bound]
             sigma_cat_hat = self.cat_schedule.total_noise(t_hat)
@@ -572,9 +574,11 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
             sigma_num_hat = sigma_num_cur + gamma * sigma_num_cur
             t_hat = self.num_schedule.inverse_to_t(sigma_num_hat)
             t_hat = torch.min(t_hat, dim=-1, keepdim=True).values    # take the samllest t_hat induced by sigma_num
-            zero_gamma = (gamma == 0).squeeze(-1)
+            # `gamma` can be per-column (shape: [T, d_num]) when using per-column
+            # schedules. Reduce masks to per-timestep before indexing `t_hat`/`t`.
+            zero_gamma = (gamma == 0).all(dim=-1)
             t_hat[zero_gamma] = t[zero_gamma]
-            out_of_bound = (t_hat > 1).squeeze()
+            out_of_bound = (t_hat > 1).squeeze(-1)
             sigma_num_hat[out_of_bound] = sigma_num_cur[out_of_bound]
             t_hat[out_of_bound] = t[out_of_bound]
             sigma_cat_hat = self.cat_schedule.total_noise(t_hat)
