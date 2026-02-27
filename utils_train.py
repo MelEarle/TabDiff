@@ -169,21 +169,26 @@ def make_dataset(
 
     # classification-style branching
     if resolved_task_type in {'binclass', 'multiclass'}:
-        X_cat = {} if os.path.exists(os.path.join(data_path, 'X_cat_train.npy'))  else None
-        X_num = {} if os.path.exists(os.path.join(data_path, 'X_num_train.npy')) else None
+        if y_only:
+            X_num = {}
+            X_cat = {}
+        else:
+            X_cat = {} if os.path.exists(os.path.join(data_path, 'X_cat_train.npy'))  else None
+            X_num = {} if os.path.exists(os.path.join(data_path, 'X_num_train.npy')) else None
         y = {} if os.path.exists(os.path.join(data_path, 'y_train.npy')) else None
 
         for split in ['train', 'test']:
             X_num_t, X_cat_t, y_t = src.read_pure_data(data_path, split)
+            y_2d = y_t if y_t.ndim == 2 else y_t[:, None]
             if y_only:
-                X_num_t = y_t[:, num_target_pos_in_y] if num_target_dim > 0 else X_num_t[:, :0]
-                X_cat_t = y_t[:, cat_target_pos_in_y] if cat_target_dim > 0 else X_cat_t[:, :0]
+                X_num_t = y_2d[:, num_target_pos_in_y] if num_target_dim > 0 else np.empty((y_2d.shape[0], 0), dtype=np.float32)
+                X_cat_t = y_2d[:, cat_target_pos_in_y] if cat_target_dim > 0 else np.empty((y_2d.shape[0], 0), dtype=np.int64)
             elif concat:
                 if len(num_target_col_idx) > 0 or len(cat_target_col_idx) > 0:
                     if num_target_dim > 0:
-                        X_num_t = np.concatenate([y_t[:, num_target_pos_in_y], X_num_t], axis=1)
+                        X_num_t = np.concatenate([y_2d[:, num_target_pos_in_y], X_num_t], axis=1)
                     if cat_target_dim > 0:
-                        X_cat_t = np.concatenate([y_t[:, cat_target_pos_in_y], X_cat_t], axis=1)
+                        X_cat_t = np.concatenate([y_2d[:, cat_target_pos_in_y], X_cat_t], axis=1)
             if X_num is not None:
                 X_num[split] = X_num_t
             if X_cat is not None:
@@ -194,21 +199,26 @@ def make_dataset(
                 y[split] = y_t
     else:
         # regression
-        X_cat = {} if os.path.exists(os.path.join(data_path, 'X_cat_train.npy')) else None
-        X_num = {} if os.path.exists(os.path.join(data_path, 'X_num_train.npy')) else None
+        if y_only:
+            X_num = {}
+            X_cat = {}
+        else:
+            X_cat = {} if os.path.exists(os.path.join(data_path, 'X_cat_train.npy')) else None
+            X_num = {} if os.path.exists(os.path.join(data_path, 'X_num_train.npy')) else None
         y = {} if os.path.exists(os.path.join(data_path, 'y_train.npy')) else None
 
         for split in ['train', 'test']:
             X_num_t, X_cat_t, y_t = src.read_pure_data(data_path, split)
+            y_2d = y_t if y_t.ndim == 2 else y_t[:, None]
             if y_only:
-                X_num_t = y_t[:, num_target_pos_in_y] if num_target_dim > 0 else X_num_t[:, :0]
-                X_cat_t = y_t[:, cat_target_pos_in_y] if cat_target_dim > 0 else X_cat_t[:, :0]
+                X_num_t = y_2d[:, num_target_pos_in_y] if num_target_dim > 0 else np.empty((y_2d.shape[0], 0), dtype=np.float32)
+                X_cat_t = y_2d[:, cat_target_pos_in_y] if cat_target_dim > 0 else np.empty((y_2d.shape[0], 0), dtype=np.int64)
             elif concat:
                 if len(num_target_col_idx) > 0 or len(cat_target_col_idx) > 0:
                     if num_target_dim > 0:
-                        X_num_t = np.concatenate([y_t[:, num_target_pos_in_y], X_num_t], axis=1)
+                        X_num_t = np.concatenate([y_2d[:, num_target_pos_in_y], X_num_t], axis=1)
                     if cat_target_dim > 0:
-                        X_cat_t = np.concatenate([y_t[:, cat_target_pos_in_y], X_cat_t], axis=1)
+                        X_cat_t = np.concatenate([y_2d[:, cat_target_pos_in_y], X_cat_t], axis=1)
             if X_num is not None:
                 if concat and not y_only and len(num_target_col_idx) == 0 and len(cat_target_col_idx) == 0:
                     X_num_t = concat_y_to_X(X_num_t, y_t)
