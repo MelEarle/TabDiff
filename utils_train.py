@@ -208,13 +208,23 @@ def make_dataset(
 
     if y_only:
         int_col_idx_wrt_num = []
+    valid_task_types = {t.value for t in src.TaskType}
+    if task_type in valid_task_types:
+        resolved_task_type = task_type
+    elif task_type == 'mixed':
+        # Mixed-target datasets are internally handled via explicit target index lists.
+        # Use a non-multiclass TaskType so downstream preprocessing can proceed.
+        resolved_task_type = 'binclass'
+    else:
+        raise ValueError(f"Unknown task_type: {task_type}")
+
     D = src.Dataset(
         X_num,
         X_cat,
         y,
         int_col_idx_wrt_num,
         y_info={},
-        task_type=src.TaskType(info['task_type']),
+        task_type=src.TaskType(resolved_task_type),
         n_classes=info.get('n_classes')
     )
 
