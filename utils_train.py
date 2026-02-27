@@ -160,8 +160,10 @@ def make_dataset(
     if len(num_target_col_idx) == 0 and len(cat_target_col_idx) == 0:
         if task_type == 'regression':
             num_target_dim, cat_target_dim = len(info['target_col_idx']), 0
+            num_target_pos_in_y = list(range(num_target_dim))
         else:
             num_target_dim, cat_target_dim = 0, len(info['target_col_idx'])
+            cat_target_pos_in_y = list(range(cat_target_dim))
     else:
         num_target_dim, cat_target_dim = len(num_target_col_idx), len(cat_target_col_idx)
 
