@@ -119,9 +119,15 @@ def update_ema(target_params, source_params, rate=0.999):
 
 
 def concat_y_to_X(X, y):
+    y = np.asarray(y)
+    if y.ndim == 1:
+        y = y[:, None]
+    elif y.ndim != 2:
+        raise ValueError(f"Expected `y` to be 1D or 2D, but got shape {y.shape}")
+
     if X is None:
-        return y.reshape(-1, 1)
-    return np.concatenate([y.reshape(-1, 1), X], axis=1)
+        return y
+    return np.concatenate([y, X], axis=1)
 
 
 def make_dataset(
