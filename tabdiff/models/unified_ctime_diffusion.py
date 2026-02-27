@@ -556,6 +556,16 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
             cat_mask = torch.tensor(cat_mask).to(x_cat.device).to(x_cat.dtype)
             self.cat_mask_tensor = cat_mask.bool().unsqueeze(0).repeat(b, 1)
 
+        # Ensure CFG target indices match the guidance model input dimensionality.
+        if self.y_only_model is not None:
+            y_only_backbone = self.y_only_model.denoise_fn_D.denoise_fn_F
+            expected_num = y_only_backbone.d_numerical
+            expected_cat = len(y_only_backbone.categories)
+            if len(self.num_mask_idx) != expected_num:
+                self.num_mask_idx = list(range(expected_num))
+            if len(self.cat_mask_idx) != expected_cat:
+                self.cat_mask_idx = list(range(expected_cat))
+
         # Create the chain of t
         t = torch.linspace(0,1,self.num_timesteps, dtype=dtype, device=device)      # times = 0.0,...,1.0
         t = t[:, None]
