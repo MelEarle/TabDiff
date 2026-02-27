@@ -119,9 +119,15 @@ def update_ema(target_params, source_params, rate=0.999):
 
 
 def concat_y_to_X(X, y):
+    y = np.asarray(y)
+    if y.ndim == 1:
+        y = y[:, None]
+    elif y.ndim != 2:
+        raise ValueError(f"Expected `y` to be 1D or 2D, but got shape {y.shape}")
+
     if X is None:
-        return y.reshape(-1, 1)
-    return np.concatenate([y.reshape(-1, 1), X], axis=1)
+        return y
+    return np.concatenate([y, X], axis=1)
 
 
 def make_dataset(
@@ -202,13 +208,23 @@ def make_dataset(
 
     if y_only:
         int_col_idx_wrt_num = []
+    valid_task_types = {t.value for t in src.TaskType}
+    if task_type in valid_task_types:
+        resolved_task_type = task_type
+    elif task_type == 'mixed':
+        # Mixed-target datasets are internally handled via explicit target index lists.
+        # Use a non-multiclass TaskType so downstream preprocessing can proceed.
+        resolved_task_type = 'binclass'
+    else:
+        raise ValueError(f"Unknown task_type: {task_type}")
+
     D = src.Dataset(
         X_num,
         X_cat,
         y,
         int_col_idx_wrt_num,
         y_info={},
-        task_type=src.TaskType(info['task_type']),
+        task_type=src.TaskType(resolved_task_type),
         n_classes=info.get('n_classes')
     )
 
