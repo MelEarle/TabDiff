@@ -469,15 +469,35 @@ class Trainer:
         cat_inverse = self.dataset.cat_inverse
         
         if self.y_only:
-            if info['task_type'] == 'binclass':
-                syn_data = cat_inverse(syn_data)
+            num_target_col_idx = info.get('num_target_col_idx', [])
+            cat_target_col_idx = info.get('cat_target_col_idx', [])
+            if len(num_target_col_idx) == 0 and len(cat_target_col_idx) == 0:
+                if info['task_type'] == 'binclass':
+                    syn_data = cat_inverse(syn_data)
+                else:
+                    syn_data = num_inverse(syn_data)
+                syn_df = pd.DataFrame()
+                syn_df[info['column_names'][info['target_col_idx'][0]]] = syn_data[:, 0]
             else:
-                syn_data = num_inverse(syn_data)
-            syn_df = pd.DataFrame()
-            syn_df[info['column_names'][info['target_col_idx'][0]]] = syn_data[:, 0]
+                num_target_count = len(num_target_col_idx)
+                cat_target_count = len(cat_target_col_idx)
+                syn_num_target = syn_data[:, :num_target_count]
+                syn_cat_target = syn_data[:, num_target_count:num_target_count+cat_target_count]
+
+                if num_target_count > 0:
+                    syn_num_target = num_inverse(syn_num_target).astype(np.float32)
+                    syn_num_target = int_inverse(syn_num_target).astype(np.float32)
+                if cat_target_count > 0:
+                    syn_cat_target = cat_inverse(syn_cat_target)
+
+                syn_df = pd.DataFrame()
+                for i, col_idx in enumerate(num_target_col_idx):
+                    syn_df[info['column_names'][col_idx]] = syn_num_target[:, i]
+                for i, col_idx in enumerate(cat_target_col_idx):
+                    syn_df[info['column_names'][col_idx]] = syn_cat_target[:, i]
         else:
-            syn_num, syn_cat, syn_target = split_num_cat_target(syn_data, info, num_inverse, int_inverse, cat_inverse) 
-            syn_df = recover_data(syn_num, syn_cat, syn_target, info)
+            syn_num, syn_cat, syn_num_target, syn_cat_target = split_num_cat_target(syn_data, info, num_inverse, int_inverse, cat_inverse) 
+            syn_df = recover_data(syn_num, syn_cat, syn_num_target, syn_cat_target, info)
             
 
             idx_name_mapping = info['idx_name_mapping']
@@ -518,11 +538,19 @@ class Trainer:
         X_train = self.dataset.X
         X_train = X_train
         x_num_train, x_cat_train = X_train[:,:d_numerical], X_train[:,d_numerical:]
-        
-        if task_type == 'binclass':    # for cat cols, push the masked col to [MASK]
-            cat_mask_idx += [0]
-        else:      # for num cols, set the masked col to the col mean
-            num_mask_idx += [0]
+
+        num_target_col_idx = info.get('num_target_col_idx', [])
+        cat_target_col_idx = info.get('cat_target_col_idx', [])
+        if len(num_target_col_idx) == 0 and len(cat_target_col_idx) == 0:
+            if task_type == 'binclass':
+                cat_mask_idx = [0]
+            else:
+                num_mask_idx = [0]
+        else:
+            num_mask_idx = list(range(len(num_target_col_idx)))
+            cat_mask_idx = list(range(len(cat_target_col_idx)))
+
+        if num_mask_idx:
             avg = x_num_train[:, num_mask_idx].mean(0).to(self.device)
         
         with torch.no_grad():
@@ -548,13 +576,14 @@ class Trainer:
                 int_inverse = self.dataset.int_inverse
                 cat_inverse = self.dataset.cat_inverse
                 
-                if torch.any((syn_data[:, d_numerical+1:]).max(dim=0).values > (x_cat_train[:,1:]).max(dim=0).values):     # if the test set contains categories not presented in the train set, we can not do cat_inverse. So we implement a patch that set those columns to the same as the train set
+                cat_target_count = len(cat_mask_idx)
+                if torch.any((syn_data[:, d_numerical+cat_target_count:]).max(dim=0).values > (x_cat_train[:,cat_target_count:]).max(dim=0).values):     # if the test set contains categories not presented in the train set, we can not do cat_inverse. So we implement a patch that set those columns to the same as the train set
                     print("Test set contains extra categories, and so does imputed syn data. We cannot do cat_inverse. So we set the cat columns as the same as the train set")
-                    syn_data[:, d_numerical+1:] = x_cat_train[:syn_data.shape[0],1:]
+                    syn_data[:, d_numerical+cat_target_count:] = x_cat_train[:syn_data.shape[0],cat_target_count:]
                     
                 
-                syn_num, syn_cat, syn_target = split_num_cat_target(syn_data, info, num_inverse, int_inverse, cat_inverse) 
-                syn_df = recover_data(syn_num, syn_cat, syn_target, info)
+                syn_num, syn_cat, syn_num_target, syn_cat_target = split_num_cat_target(syn_data, info, num_inverse, int_inverse, cat_inverse) 
+                syn_df = recover_data(syn_num, syn_cat, syn_num_target, syn_cat_target, info)
 
                 idx_name_mapping = info['idx_name_mapping']
                 idx_name_mapping = {int(key): value for key, value in idx_name_mapping.items()}
@@ -573,14 +602,15 @@ def split_num_cat_target(syn_data, info, num_inverse, int_inverse, cat_inverse):
     num_col_idx = info['num_col_idx']
     cat_col_idx = info['cat_col_idx']
     target_col_idx = info['target_col_idx']
+    num_target_col_idx = info.get('num_target_col_idx', [])
+    cat_target_col_idx = info.get('cat_target_col_idx', [])
+    if len(num_target_col_idx) == 0 and len(cat_target_col_idx) == 0:
+        if task_type == 'regression':
+            num_target_col_idx = target_col_idx
+        else:
+            cat_target_col_idx = target_col_idx
 
-    n_num_feat = len(num_col_idx)
-    n_cat_feat = len(cat_col_idx)
-
-    if task_type == 'regression':
-        n_num_feat += len(target_col_idx)
-    else:
-        n_cat_feat += len(target_col_idx)
+    n_num_feat = len(num_col_idx) + len(num_target_col_idx)
 
     syn_num = syn_data[:, :n_num_feat]
     syn_cat = syn_data[:, n_num_feat:]
@@ -589,47 +619,43 @@ def split_num_cat_target(syn_data, info, num_inverse, int_inverse, cat_inverse):
     syn_num = int_inverse(syn_num).astype(np.float32)
     syn_cat = cat_inverse(syn_cat)
 
+    syn_num_target = syn_num[:, :len(num_target_col_idx)]
+    syn_num = syn_num[:, len(num_target_col_idx):]
 
-    if info['task_type'] == 'regression':
-        syn_target = syn_num[:, :len(target_col_idx)]
-        syn_num = syn_num[:, len(target_col_idx):]
-    
-    else:
-        print(syn_cat.shape)
-        syn_target = syn_cat[:, :len(target_col_idx)]
-        syn_cat = syn_cat[:, len(target_col_idx):]
+    syn_cat_target = syn_cat[:, :len(cat_target_col_idx)]
+    syn_cat = syn_cat[:, len(cat_target_col_idx):]
 
-    return syn_num, syn_cat, syn_target
+    return syn_num, syn_cat, syn_num_target, syn_cat_target
 
-def recover_data(syn_num, syn_cat, syn_target, info):
+def recover_data(syn_num, syn_cat, syn_num_target, syn_cat_target, info):
 
     num_col_idx = info['num_col_idx']
     cat_col_idx = info['cat_col_idx']
     target_col_idx = info['target_col_idx']
-
-
-    idx_mapping = info['idx_mapping']
-    idx_mapping = {int(key): value for key, value in idx_mapping.items()}
+    num_target_col_idx = info.get('num_target_col_idx', [])
+    cat_target_col_idx = info.get('cat_target_col_idx', [])
+    if len(num_target_col_idx) == 0 and len(cat_target_col_idx) == 0:
+        if info['task_type'] == 'regression':
+            num_target_col_idx = target_col_idx
+        else:
+            cat_target_col_idx = target_col_idx
 
     syn_df = pd.DataFrame()
+    n_total_cols = len(num_col_idx) + len(cat_col_idx) + len(target_col_idx)
 
-    if info['task_type'] == 'regression':
-        for i in range(len(num_col_idx) + len(cat_col_idx) + len(target_col_idx)):
-            if i in set(num_col_idx):
-                syn_df[i] = syn_num[:, idx_mapping[i]] 
-            elif i in set(cat_col_idx):
-                syn_df[i] = syn_cat[:, idx_mapping[i] - len(num_col_idx)]
-            else:
-                syn_df[i] = syn_target[:, idx_mapping[i] - len(num_col_idx) - len(cat_col_idx)]
+    num_col_pos = {col: i for i, col in enumerate(num_col_idx)}
+    cat_col_pos = {col: i for i, col in enumerate(cat_col_idx)}
+    num_target_pos = {col: i for i, col in enumerate(num_target_col_idx)}
+    cat_target_pos = {col: i for i, col in enumerate(cat_target_col_idx)}
 
-
-    else:
-        for i in range(len(num_col_idx) + len(cat_col_idx) + len(target_col_idx)):
-            if i in set(num_col_idx):
-                syn_df[i] = syn_num[:, idx_mapping[i]]
-            elif i in set(cat_col_idx):
-                syn_df[i] = syn_cat[:, idx_mapping[i] - len(num_col_idx)]
-            else:
-                syn_df[i] = syn_target[:, idx_mapping[i] - len(num_col_idx) - len(cat_col_idx)]
+    for i in range(n_total_cols):
+        if i in num_target_pos:
+            syn_df[i] = syn_num_target[:, num_target_pos[i]]
+        elif i in num_col_pos:
+            syn_df[i] = syn_num[:, num_col_pos[i]]
+        elif i in cat_target_pos:
+            syn_df[i] = syn_cat_target[:, cat_target_pos[i]]
+        elif i in cat_col_pos:
+            syn_df[i] = syn_cat[:, cat_col_pos[i]]
 
     return syn_df

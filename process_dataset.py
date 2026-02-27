@@ -381,10 +381,19 @@ def process_data(name):
     num_col_idx = info['num_col_idx']
     cat_col_idx = info['cat_col_idx']
     target_col_idx = info['target_col_idx']
+    num_target_col_idx = info.get('num_target_col_idx', [])
+    cat_target_col_idx = info.get('cat_target_col_idx', [])
+    if len(num_target_col_idx) == 0 and len(cat_target_col_idx) == 0:
+        if info['task_type'] == 'regression':
+            num_target_col_idx = target_col_idx
+        else:
+            cat_target_col_idx = target_col_idx
 
     num_columns = [column_names[i] for i in num_col_idx]
     cat_columns = [column_names[i] for i in cat_col_idx]
     target_columns = [column_names[i] for i in target_col_idx]
+    num_target_columns = [column_names[i] for i in num_target_col_idx]
+    cat_target_columns = [column_names[i] for i in cat_target_col_idx]
     
     idx_mapping, inverse_idx_mapping, idx_name_mapping = get_column_name_mapping(data_df, num_col_idx, cat_col_idx, target_col_idx, column_names)
 
@@ -460,25 +469,24 @@ def process_data(name):
     
     for col_idx in num_col_idx:
         col_info[col_idx] = {}
-        col_info['type'] = 'numerical'
-        col_info['max'] = float(train_df[col_idx].max())
-        col_info['min'] = float(train_df[col_idx].min())
+        col_info[col_idx]['type'] = 'numerical'
+        col_info[col_idx]['max'] = float(train_df[col_idx].max())
+        col_info[col_idx]['min'] = float(train_df[col_idx].min())
      
     for col_idx in cat_col_idx:
         col_info[col_idx] = {}
-        col_info['type'] = 'categorical'
-        col_info['categorizes'] = list(set(train_df[col_idx]))    
+        col_info[col_idx]['type'] = 'categorical'
+        col_info[col_idx]['categorizes'] = list(set(train_df[col_idx]))    
 
-    for col_idx in target_col_idx:
-        if info['task_type'] == 'regression':
-            col_info[col_idx] = {}
-            col_info['type'] = 'numerical'
-            col_info['max'] = float(train_df[col_idx].max())
-            col_info['min'] = float(train_df[col_idx].min())
-        else:
-            col_info[col_idx] = {}
-            col_info['type'] = 'categorical'
-            col_info['categorizes'] = list(set(train_df[col_idx]))      
+    for col_idx in num_target_col_idx:
+        col_info[col_idx] = {}
+        col_info[col_idx]['type'] = 'numerical'
+        col_info[col_idx]['max'] = float(train_df[col_idx].max())
+        col_info[col_idx]['min'] = float(train_df[col_idx].min())
+    for col_idx in cat_target_col_idx:
+        col_info[col_idx] = {}
+        col_info[col_idx]['type'] = 'categorical'
+        col_info[col_idx]['categorizes'] = list(set(train_df[col_idx]))
 
     info['column_info'] = col_info
 
@@ -486,7 +494,7 @@ def process_data(name):
     test_df.rename(columns = idx_name_mapping, inplace=True)
     val_df.rename(columns = idx_name_mapping, inplace=True)
 
-    for col in num_columns:
+    for col in num_columns + num_target_columns:
         if (train_df[col] == ' ?').sum() > 0:
             print(col)
             import pdb; pdb.set_trace()
@@ -494,9 +502,10 @@ def process_data(name):
             print(col)
             import pdb; pdb.set_trace()
         train_df.loc[train_df[col] == '?', col] = np.nan
-    for col in cat_columns:
+    for col in cat_columns + cat_target_columns:
         train_df.loc[train_df[col] == '?', col] = 'nan'
-    for col in num_columns:
+
+    for col in num_columns + num_target_columns:
         if (test_df[col] == ' ?').sum() > 0:
             print(col)
             import pdb; pdb.set_trace()
@@ -504,15 +513,25 @@ def process_data(name):
             print(col)
             import pdb; pdb.set_trace()
         test_df.loc[test_df[col] == '?', col] = np.nan
-    for col in cat_columns:
+    for col in cat_columns + cat_target_columns:
         test_df.loc[test_df[col] == '?', col] = 'nan'
-    for col in num_columns:
+
+    for col in num_columns + num_target_columns:
         val_df.loc[val_df[col] == '?', col] = np.nan
-    for col in cat_columns:
+    for col in cat_columns + cat_target_columns:
         val_df.loc[val_df[col] == '?', col] = 'nan'
-    
-    if train_df.isna().any().any():
-        print("Training data contains nan in the numerical cols")
+
+    # Workaround mode: train on complete rows only, while keeping test/val rows for imputation.
+    complete_mask = ~train_df[num_columns + num_target_columns].isna().any(axis=1)
+    if len(cat_columns + cat_target_columns) > 0:
+        complete_mask &= ~(train_df[cat_columns + cat_target_columns] == 'nan').any(axis=1)
+    dropped_train = int((~complete_mask).sum())
+    if dropped_train > 0:
+        print(f"Dropping {dropped_train} incomplete rows from training split; using complete rows for training.")
+        train_df = train_df[complete_mask].reset_index(drop=True)
+
+    if train_df[num_columns + num_target_columns].isna().any().any():
+        print("Training data still contains NaN in numerical columns after filtering complete rows")
         import pdb; pdb.set_trace()
 
 
@@ -591,17 +610,14 @@ def process_data(name):
         metadata['columns'][i]['sdtype'] = 'categorical'
 
 
-    if task_type == 'regression':
-        
-        for i in target_col_idx:
-            metadata['columns'][i] = {}
-            metadata['columns'][i]['sdtype'] = 'numerical'
-            metadata['columns'][i]['computer_representation'] = 'Float'
+    for i in num_target_col_idx:
+        metadata['columns'][i] = {}
+        metadata['columns'][i]['sdtype'] = 'numerical'
+        metadata['columns'][i]['computer_representation'] = 'Float'
 
-    else:
-        for i in target_col_idx:
-            metadata['columns'][i] = {}
-            metadata['columns'][i]['sdtype'] = 'categorical'
+    for i in cat_target_col_idx:
+        metadata['columns'][i] = {}
+        metadata['columns'][i]['sdtype'] = 'categorical'
 
     info['metadata'] = metadata
 
@@ -615,12 +631,8 @@ def process_data(name):
     print('Train', info['train_num'])
     print('Val', info['val_num'])
     print('Test', info['test_num'])
-    if info['task_type'] == 'regression':
-        num = len(info['num_col_idx'] + info['target_col_idx'])
-        cat = len(info['cat_col_idx'])
-    else:
-        cat = len(info['cat_col_idx'] + info['target_col_idx'])
-        num = len(info['num_col_idx'])
+    num = len(info['num_col_idx']) + len(num_target_col_idx)
+    cat = len(info['cat_col_idx']) + len(cat_target_col_idx)
     print('Num', num)
     print('Int', len(info['int_col_idx']))
     print('Cat', cat)
@@ -643,4 +655,3 @@ if __name__ == "__main__":
             process_data(name)
 
         
-
