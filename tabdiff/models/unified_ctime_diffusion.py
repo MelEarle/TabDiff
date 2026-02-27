@@ -75,6 +75,8 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
         self.w_cat = 0.0
         self.num_mask_idx = []
         self.cat_mask_idx = []
+        self.num_mask_tensor = None
+        self.cat_mask_tensor = None
         
         self.device = device
         
@@ -175,7 +177,7 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
             sigma_num_hat = sigma_num_cur + gamma * sigma_num_cur
             t_hat = self.num_schedule.inverse_to_t(sigma_num_hat)
             t_hat = torch.min(t_hat, dim=-1, keepdim=True).values    # take the samllest t_hat induced by sigma_num
-            zero_gamma = (gamma==0).any()
+            zero_gamma = (gamma == 0).squeeze(-1)
             t_hat[zero_gamma] = t[zero_gamma]
             out_of_bound = (t_hat > 1).squeeze()
             sigma_num_hat[out_of_bound] = sigma_num_cur[out_of_bound]
@@ -445,14 +447,18 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
                 t_hat.squeeze().repeat(b), sigma=sigma_cond.unsqueeze(0).repeat(b,1)  # sigma accepts (bs, K_num)
             )
             
-            denoised[:, self.num_mask_idx] *= 1 + self.w_num
-            denoised[:, self.num_mask_idx] -= self.w_num*y_only_denoised
-            
+            if len(self.num_mask_idx) > 0:
+                num_missing = self.num_mask_tensor[:, self.num_mask_idx].to(denoised.dtype)
+                denoised[:, self.num_mask_idx] += self.w_num * num_missing * (denoised[:, self.num_mask_idx] - y_only_denoised)
+
             mask_logit_idx = [self.slices_for_classes_with_mask[i] for i in self.cat_mask_idx]
             mask_logit_idx = np.concatenate(mask_logit_idx) if len(mask_logit_idx)>0 else np.array([])
-            
-            raw_logits[:, mask_logit_idx] *= 1 + self.w_cat
-            raw_logits[:, mask_logit_idx] -= self.w_cat*y_only_raw_logits
+            if len(mask_logit_idx) > 0:
+                cat_missing = torch.cat([
+                    self.cat_mask_tensor[:, i:i+1].repeat(1, len(self.slices_for_classes_with_mask[i]))
+                    for i in self.cat_mask_idx
+                ], dim=1).to(raw_logits.dtype)
+                raw_logits[:, mask_logit_idx] += self.w_cat * cat_missing * (raw_logits[:, mask_logit_idx] - y_only_raw_logits)
         
         # Euler step
         d_cur = (x_num_hat - denoised) / sigma_num_hat
@@ -491,8 +497,9 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
                         y_cat_hat,
                         t_next.squeeze().repeat(b), sigma=sigma_cond.unsqueeze(0).repeat(b,1)  # sigma accepts (bs, K_num)
                     )
-                    denoised[:, self.num_mask_idx] *= 1 + self.w_num
-                    denoised[:, self.num_mask_idx] -= self.w_num*y_only_denoised
+                    if len(self.num_mask_idx) > 0:
+                        num_missing = self.num_mask_tensor[:, self.num_mask_idx].to(denoised.dtype)
+                        denoised[:, self.num_mask_idx] += self.w_num * num_missing * (denoised[:, self.num_mask_idx] - y_only_denoised)
                 
                 d_prime = (x_num_next - denoised) / sigma_num_next
                 x_num_next = x_num_hat + (sigma_num_next - sigma_num_hat) * (0.5 * d_cur + 0.5 * d_prime)
@@ -505,6 +512,8 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
         self.w_cat = w_cat
         self.num_mask_idx = num_mask_idx
         self.cat_mask_idx = cat_mask_idx
+        self.num_mask_tensor = None
+        self.cat_mask_tensor = None
         
         b = x_num.size(0)
         device = self.device
@@ -521,11 +530,13 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
                     f"num_mask_idx has shape {tuple(num_mask_idx.shape)}, expected {(b, self.num_numerical_features)}"
                 )
             num_mask = num_mask_idx.to(x_num.device).to(x_num.dtype)
+            self.num_mask_tensor = num_mask.bool()
             # Keep CFG target indexing as column-level indices.
-            self.num_mask_idx = num_mask.bool().any(dim=0).nonzero(as_tuple=False).flatten().tolist()
+            self.num_mask_idx = self.num_mask_tensor.any(dim=0).nonzero(as_tuple=False).flatten().tolist()
         else:
             num_mask = [i in num_mask_idx for i in range(self.num_numerical_features)]
             num_mask = torch.tensor(num_mask).to(x_num.device).to(x_num.dtype)
+            self.num_mask_tensor = num_mask.bool().unsqueeze(0).repeat(b, 1)
 
         if isinstance(cat_mask_idx, torch.Tensor):
             if cat_mask_idx.dim() != 2:
@@ -535,11 +546,13 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
                     f"cat_mask_idx has shape {tuple(cat_mask_idx.shape)}, expected {(b, len(self.num_classes))}"
                 )
             cat_mask = cat_mask_idx.to(x_cat.device).to(x_cat.dtype)
+            self.cat_mask_tensor = cat_mask.bool()
             # Keep CFG target indexing as column-level indices.
-            self.cat_mask_idx = cat_mask.bool().any(dim=0).nonzero(as_tuple=False).flatten().tolist()
+            self.cat_mask_idx = self.cat_mask_tensor.any(dim=0).nonzero(as_tuple=False).flatten().tolist()
         else:
             cat_mask = [i in cat_mask_idx for i in range(len(self.num_classes))]
             cat_mask = torch.tensor(cat_mask).to(x_cat.device).to(x_cat.dtype)
+            self.cat_mask_tensor = cat_mask.bool().unsqueeze(0).repeat(b, 1)
 
         # Create the chain of t
         t = torch.linspace(0,1,self.num_timesteps, dtype=dtype, device=device)      # times = 0.0,...,1.0
@@ -559,7 +572,7 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
             sigma_num_hat = sigma_num_cur + gamma * sigma_num_cur
             t_hat = self.num_schedule.inverse_to_t(sigma_num_hat)
             t_hat = torch.min(t_hat, dim=-1, keepdim=True).values    # take the samllest t_hat induced by sigma_num
-            zero_gamma = (gamma==0).any()
+            zero_gamma = (gamma == 0).squeeze(-1)
             t_hat[zero_gamma] = t[zero_gamma]
             out_of_bound = (t_hat > 1).squeeze()
             sigma_num_hat[out_of_bound] = sigma_num_cur[out_of_bound]
@@ -575,6 +588,8 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
             z_norm = x_num + torch.randn((b, self.num_numerical_features), device=device) * sigma_num_cur[-1]   # z_{t_max} = x_0(masked) + sigma_max*epsilon
         elif impute_condition == "x_0":
             z_norm = x_num
+        else:
+            raise ValueError(f"Unsupported impute_condition: {impute_condition}. Expected one of ['x_t', 'x_0']")
             
         # Sample priors for the discrete dimensions
         has_cat = len(self.num_classes) > 0
@@ -587,6 +602,8 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
                 )   # z_{t_max} is still all pushed to [MASK]
             elif impute_condition == "x_0":
                 z_cat = x_cat
+            else:
+                raise ValueError(f"Unsupported impute_condition: {impute_condition}. Expected one of ['x_t', 'x_0']")
         
         pbar = tqdm(reversed(range(0, self.num_timesteps)), total=self.num_timesteps)
         pbar.set_description(f"Sampling Progress")
@@ -600,6 +617,8 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
                 elif impute_condition == "x_0":
                     z_norm_known = x_num
                     z_cat_known = x_cat
+                else:
+                    raise ValueError(f"Unsupported impute_condition: {impute_condition}. Expected one of ['x_t', 'x_0']")
                 
                 # Get unknown by Reverse Step
                 z_norm_unknown, z_cat_unknown, q_xs = self.edm_update(

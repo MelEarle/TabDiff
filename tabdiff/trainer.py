@@ -528,9 +528,25 @@ class Trainer:
         self.diffusion.num_schedule = curr_num_schedule
         self.diffusion.cat_schedule = curr_cat_schedule
         
-    def test_impute(self, trail_start, trial_size, resample_rounds, impute_condition, imputed_sample_save_dir, w_num, w_cat):
+    def test_impute(
+        self,
+        trail_start,
+        trial_size,
+        resample_rounds,
+        impute_condition,
+        imputed_sample_save_dir,
+        w_num,
+        w_cat,
+        mask_mode="target_only",
+        cat_missing_strategy="mask_or_negative",
+    ):
         self.diffusion.eval()
-        
+
+        if mask_mode not in ["target_only", "rowwise_auto", "rowwise_only"]:
+            raise ValueError(f"Unsupported mask_mode: {mask_mode}")
+        if cat_missing_strategy not in ["mask_or_negative", "out_of_range"]:
+            raise ValueError(f"Unsupported cat_missing_strategy: {cat_missing_strategy}")
+
         info = self.metrics.info
         task_type = info['task_type']
         d_numerical, categories = self.dataset.d_numerical, self.dataset.categories
@@ -550,46 +566,76 @@ class Trainer:
             num_mask_idx = list(range(len(num_target_col_idx)))
             cat_mask_idx = list(range(len(cat_target_col_idx)))
 
+        num_avg_all = x_num_train.mean(0).to(self.device) if d_numerical > 0 else torch.zeros(0, device=self.device)
         if num_mask_idx:
             avg = x_num_train[:, num_mask_idx].mean(0).to(self.device)
-        
+
         with torch.no_grad():
-            
+
             for trial in range(trail_start, trail_start+trial_size):
                 print_with_bar(f"Imputing trial {trial}")
                 X_test = self.test_dataset.X
                 X_test = deepcopy(X_test).to(self.device)
                 x_num_test, x_cat_test = X_test[:, :d_numerical], X_test[:, d_numerical:].long()
-                
-                # Apply mask to x_0
-                if num_mask_idx:
-                    x_num_test[:, num_mask_idx] = avg
-                if cat_mask_idx:
-                    x_cat_test[:, cat_mask_idx] = torch.tensor(categories, dtype=x_cat_test.dtype, device=x_cat_test.device)[cat_mask_idx]
-                
+
+                use_rowwise_masks = mask_mode in ["rowwise_auto", "rowwise_only"]
+                if use_rowwise_masks:
+                    num_missing_mask = torch.isnan(x_num_test) if d_numerical > 0 else torch.zeros((x_num_test.shape[0], 0), dtype=torch.bool, device=self.device)
+                    if len(categories) > 0:
+                        cat_sizes = torch.tensor(categories, dtype=x_cat_test.dtype, device=x_cat_test.device).unsqueeze(0)
+                        if cat_missing_strategy == "out_of_range":
+                            cat_missing_mask = (x_cat_test < 0) | (x_cat_test >= cat_sizes)
+                        else:
+                            cat_missing_mask = (x_cat_test < 0) | (x_cat_test == cat_sizes)
+                    else:
+                        cat_missing_mask = torch.zeros((x_cat_test.shape[0], 0), dtype=torch.bool, device=self.device)
+
+                    has_any_missing = bool(num_missing_mask.any() or cat_missing_mask.any())
+                    if mask_mode == "rowwise_auto" and not has_any_missing:
+                        use_rowwise_masks = False
+                    elif mask_mode == "rowwise_only" and not has_any_missing:
+                        raise ValueError("mask_mode='rowwise_only' requires at least one missing entry in the test tensor")
+
+                if use_rowwise_masks:
+                    if d_numerical > 0:
+                        x_num_test = torch.where(num_missing_mask, num_avg_all.unsqueeze(0).expand_as(x_num_test), x_num_test)
+                    if len(categories) > 0:
+                        x_cat_test = x_cat_test.clone()
+                        x_cat_test[cat_missing_mask] = cat_sizes.expand_as(x_cat_test)[cat_missing_mask]
+                    num_mask_input = num_missing_mask
+                    cat_mask_input = cat_missing_mask
+                else:
+                    # Legacy target-column imputation pathway (default).
+                    if num_mask_idx:
+                        x_num_test[:, num_mask_idx] = avg
+                    if cat_mask_idx:
+                        x_cat_test[:, cat_mask_idx] = torch.tensor(categories, dtype=x_cat_test.dtype, device=x_cat_test.device)[cat_mask_idx]
+                    num_mask_input = num_mask_idx
+                    cat_mask_input = cat_mask_idx
+
                 # Sample imputed tables
-                syn_data = self.diffusion.sample_impute(x_num_test, x_cat_test, num_mask_idx, cat_mask_idx, resample_rounds, impute_condition, w_num, w_cat)
+                syn_data = self.diffusion.sample_impute(x_num_test, x_cat_test, num_mask_input, cat_mask_input, resample_rounds, impute_condition, w_num, w_cat)
                 print(f"Shape of the imputed sample = {syn_data.shape}")
 
                 # Recover tables
                 num_inverse = self.dataset.num_inverse
                 int_inverse = self.dataset.int_inverse
                 cat_inverse = self.dataset.cat_inverse
-                
+
                 cat_target_count = len(cat_mask_idx)
                 if torch.any((syn_data[:, d_numerical+cat_target_count:]).max(dim=0).values > (x_cat_train[:,cat_target_count:]).max(dim=0).values):     # if the test set contains categories not presented in the train set, we can not do cat_inverse. So we implement a patch that set those columns to the same as the train set
                     print("Test set contains extra categories, and so does imputed syn data. We cannot do cat_inverse. So we set the cat columns as the same as the train set")
                     syn_data[:, d_numerical+cat_target_count:] = x_cat_train[:syn_data.shape[0],cat_target_count:]
-                    
-                
-                syn_num, syn_cat, syn_num_target, syn_cat_target = split_num_cat_target(syn_data, info, num_inverse, int_inverse, cat_inverse) 
+
+
+                syn_num, syn_cat, syn_num_target, syn_cat_target = split_num_cat_target(syn_data, info, num_inverse, int_inverse, cat_inverse)
                 syn_df = recover_data(syn_num, syn_cat, syn_num_target, syn_cat_target, info)
 
                 idx_name_mapping = info['idx_name_mapping']
                 idx_name_mapping = {int(key): value for key, value in idx_name_mapping.items()}
 
                 syn_df.rename(columns = idx_name_mapping, inplace=True)
-                
+
                 # Save imputed samples
                 os.makedirs(imputed_sample_save_dir) if not os.path.exists(imputed_sample_save_dir) else None
                 print(f"Imputed samples are saved to {imputed_sample_save_dir}/{trial}.csv")
