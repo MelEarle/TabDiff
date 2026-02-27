@@ -177,9 +177,11 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
             sigma_num_hat = sigma_num_cur + gamma * sigma_num_cur
             t_hat = self.num_schedule.inverse_to_t(sigma_num_hat)
             t_hat = torch.min(t_hat, dim=-1, keepdim=True).values    # take the samllest t_hat induced by sigma_num
-            zero_gamma = (gamma == 0).squeeze(-1)
+            # `gamma` can be per-column (shape: [T, d_num]) when using per-column
+            # schedules. Reduce masks to per-timestep before indexing `t_hat`/`t`.
+            zero_gamma = (gamma == 0).all(dim=-1)
             t_hat[zero_gamma] = t[zero_gamma]
-            out_of_bound = (t_hat > 1).squeeze()
+            out_of_bound = (t_hat > 1).squeeze(-1)
             sigma_num_hat[out_of_bound] = sigma_num_cur[out_of_bound]
             t_hat[out_of_bound] = t[out_of_bound]
             sigma_cat_hat = self.cat_schedule.total_noise(t_hat)
@@ -554,6 +556,16 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
             cat_mask = torch.tensor(cat_mask).to(x_cat.device).to(x_cat.dtype)
             self.cat_mask_tensor = cat_mask.bool().unsqueeze(0).repeat(b, 1)
 
+        # Ensure CFG target indices match the guidance model input dimensionality.
+        if self.y_only_model is not None:
+            y_only_backbone = self.y_only_model.denoise_fn_D.denoise_fn_F
+            expected_num = y_only_backbone.d_numerical
+            expected_cat = len(y_only_backbone.categories)
+            if len(self.num_mask_idx) != expected_num:
+                self.num_mask_idx = list(range(expected_num))
+            if len(self.cat_mask_idx) != expected_cat:
+                self.cat_mask_idx = list(range(expected_cat))
+
         # Create the chain of t
         t = torch.linspace(0,1,self.num_timesteps, dtype=dtype, device=device)      # times = 0.0,...,1.0
         t = t[:, None]
@@ -572,9 +584,11 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
             sigma_num_hat = sigma_num_cur + gamma * sigma_num_cur
             t_hat = self.num_schedule.inverse_to_t(sigma_num_hat)
             t_hat = torch.min(t_hat, dim=-1, keepdim=True).values    # take the samllest t_hat induced by sigma_num
-            zero_gamma = (gamma == 0).squeeze(-1)
+            # `gamma` can be per-column (shape: [T, d_num]) when using per-column
+            # schedules. Reduce masks to per-timestep before indexing `t_hat`/`t`.
+            zero_gamma = (gamma == 0).all(dim=-1)
             t_hat[zero_gamma] = t[zero_gamma]
-            out_of_bound = (t_hat > 1).squeeze()
+            out_of_bound = (t_hat > 1).squeeze(-1)
             sigma_num_hat[out_of_bound] = sigma_num_cur[out_of_bound]
             t_hat[out_of_bound] = t[out_of_bound]
             sigma_cat_hat = self.cat_schedule.total_noise(t_hat)
