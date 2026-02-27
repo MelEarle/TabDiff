@@ -225,6 +225,24 @@ python main.py --dataname <NAME_OF_DATASET> --mode test --impute --no_wandb
 ```
 This will, by default, randomly produce 50 imputed tables and save them to ./impute/<NAME_OF_DATASET>/<EXP_NAME>.
 
+### Why this implements conditional imputation from observed columns
+The implementation in `sample_impute(...)` follows the same workaround pattern described in your note:
+
+1. **Train on complete rows**: normal training uses complete tabular rows (`x_0`) and does not require missingness simulation.
+2. **Initialize reverse process from masked/noisy table**:
+   - unknown numerical entries are sampled as noisy states (`x_t` mode),
+   - unknown categorical entries are initialized to `[MASK]` states.
+3. **Reinject observed entries at every denoising step**:
+   - known entries are regenerated from the forward process,
+   - unknown entries are updated by the reverse model,
+   - then combined as
+     - `z_norm = (1 - num_mask) * z_norm_known + num_mask * z_norm_unknown`
+     - `z_cat  = (1 - cat_mask) * z_cat_known  + cat_mask * z_cat_unknown`
+
+This keeps observed values anchored through all reverse-time steps while generating only missing values conditioned on those observations.
+
+`trainer.test_impute(...)` defaults to target-column masking (`mask_mode="target_only"`) for backward compatibility, and can be switched to row-wise missingness handling (`mask_mode="rowwise_auto"`/`"rowwise_only"`). The lower-level `sample_impute(...)` also accepts per-row tensor masks directly for general patterns.
+
 ### Evaluating Imputation
 You can then evaluate the imputation quality by running
 ```
