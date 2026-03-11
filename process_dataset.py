@@ -33,7 +33,6 @@ def preprocess_beijing():
 
     data_df = data_df[columns[1:]]
 
-
     df_cleaned = data_df.dropna()
     df_cleaned.to_csv(info['data_path'], index = False)
     
@@ -47,7 +46,6 @@ def preprocess_beijing_dcr():
     columns = data_df.columns
 
     data_df = data_df[columns[1:]]
-
 
     df_cleaned = data_df.dropna()
     df_cleaned.to_csv(info['data_path'], index = False)
@@ -274,7 +272,6 @@ def preprocess_diabetes_dcr():
         json.dump(info, file, indent=4)
     
 
-
 def get_column_name_mapping(data_df, num_col_idx, cat_col_idx, target_col_idx, column_names = None):
     
     if not column_names:
@@ -316,7 +313,6 @@ def train_val_test_split(data_df, cat_columns, num_train = 0, num_test = 0):
     total_num = data_df.shape[0]
     idx = np.arange(total_num)
 
-
     seed = 1234
 
     while True:
@@ -326,11 +322,8 @@ def train_val_test_split(data_df, cat_columns, num_train = 0, num_test = 0):
         train_idx = idx[:num_train]
         test_idx = idx[-num_test:]
 
-
         train_df = data_df.loc[train_idx]
         test_df = data_df.loc[test_idx]
-
-
 
         flag = 0
         for i in cat_columns:
@@ -432,15 +425,13 @@ def process_data(name):
             complete_df.rename(columns = idx_name_mapping, inplace=True)
             train_df, test_df, seed = train_val_test_split(complete_df, cat_columns, num_train, num_test)
 
-    else:  
-        # Train/ Test Split, 90% Training (50% for dcr eval exclusively), 10% Testing (Validation set will be selected from Training set)
-        if "dcr" in name:
-            num_train = int(num_data*0.5)
-        else:
-            num_train = int(num_data*0.9)
-        num_test = num_data - num_train
-
-        train_df, test_df, seed = train_val_test_split(data_df, cat_columns, num_train, num_test)
+    else:
+        # Use the full dataset as the imputation/test split instead of the default 90/10 split.
+        # This lets TabDiff produce imputations for every row in the exported table.
+        # Training rows will still be filtered down to complete rows later in this script.
+        train_df = data_df.copy()
+        test_df = data_df.copy()
+        seed = None
     
     complete_df = pd.concat([train_df, test_df, val_df], axis = 0)
     name_idx_mapping = {val: key for key, val in idx_name_mapping.items()}
@@ -534,12 +525,9 @@ def process_data(name):
         print("Training data still contains NaN in numerical columns after filtering complete rows")
         import pdb; pdb.set_trace()
 
-
-    
     X_num_train = train_df[num_columns].to_numpy().astype(np.float32)
     X_cat_train = train_df[cat_columns].to_numpy()
     y_train = train_df[target_columns].to_numpy()
-
 
     X_num_test = test_df[num_columns].to_numpy().astype(np.float32)
     X_cat_test = test_df[cat_columns].to_numpy()
@@ -566,7 +554,6 @@ def process_data(name):
     train_df[num_columns] = train_df[num_columns].astype(np.float32)
     test_df[num_columns] = test_df[num_columns].astype(np.float32)
     val_df[num_columns] = val_df[num_columns].astype(np.float32)
-
 
     train_df.to_csv(f'{save_dir}/train.csv', index = False)
     test_df.to_csv(f'{save_dir}/test.csv', index = False)
@@ -608,7 +595,6 @@ def process_data(name):
     for i in cat_col_idx:
         metadata['columns'][i] = {}
         metadata['columns'][i]['sdtype'] = 'categorical'
-
 
     for i in num_target_col_idx:
         metadata['columns'][i] = {}
@@ -653,5 +639,4 @@ if __name__ == "__main__":
                 'diabetes_dcr'
             ]:    
             process_data(name)
-
         
